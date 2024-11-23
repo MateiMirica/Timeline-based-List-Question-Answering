@@ -1,6 +1,6 @@
 # Timeline-based-List-Question-Answering
 
-## 1. Initial (oen-time) Setup
+## 1. Initial (one-time) Setup
 
 Follow these steps to prepare your environment for the project:
 
@@ -47,7 +47,7 @@ Install the necessary packages listed in `requirements.txt`:
 pip install -r requirements.txt
 ```
 
-## 2. Running after initial setup
+## 2. Running after the initial setup
 ```bash
 wsl
 ```
