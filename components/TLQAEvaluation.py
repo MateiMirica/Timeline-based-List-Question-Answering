@@ -55,8 +55,8 @@ class TLQAEvaluation:
         """
         if metric in ["cosine_similarity", "rouge", "bleu"]:
             # Use joined strings for these metrics
-            ground_truths = [" ".join(gt["final_answers"]) for gt in self.test_data.to_dict(orient="records")]
-            predictions = [" ".join(pred["answers"]) for pred in predictions]
+            ground_truths = ["\n".join(gt["final_answers"]) for gt in self.test_data.to_dict(orient="records")]
+            predictions = ["\n".join(pred["answers"]) for pred in predictions]
 
         elif metric in ["f1", "exact_match", "temporal_consistency", "completeness"]:
             # Use lists for these metrics
