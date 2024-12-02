@@ -1,3 +1,14 @@
+from typing import List, Dict
+import json
+import pandas as pd
+import re
+import numpy as np
+from numpy import ndarray
+from rouge_score import rouge_scorer
+from nltk.translate.bleu_score import sentence_bleu
+from sentence_transformers import SentenceTransformer, util
+
+
 class TLQAEvaluation:
     """
     TLQAEvaluation evaluates LLM outputs for timeline-based question answering tasks.
@@ -12,13 +23,12 @@ class TLQAEvaluation:
 
         # Possible metrics
         self.metrics = {
-            "cosine_similarity": self.cosine_similarity,
-            "rouge": self.rouge_l_similarity,
-            "bleu": self.bleu_score,
+            "rouge": self.rouge_scores,
             "f1": self.f1_score,
             "exact_match": self.exact_match,
-            "temporal_consistency": self.temporal_consistency,
             "completeness": self.completeness,
+            "temporal_alignment": self.temporal_alignment,
+            "temporal_ordering": self.temporal_ordering,
         }
 
     @staticmethod
@@ -35,7 +45,6 @@ class TLQAEvaluation:
         """
         Normalizes the input text by removing punctuation, special characters, extra whitespace,
         and converting all characters to lowercase.
-        Normalize is applied for f1, EM, and completeness
         """
         text = re.sub(r'[^\w\s]', '', text)
         text = re.sub(r'\s+', ' ', text)
@@ -44,21 +53,22 @@ class TLQAEvaluation:
     def evaluate(self, predictions: List[Dict], metric: str, normalize: bool = False):
         """
         General evaluation method for various metrics.
-        Normalize is required for f1, EM, and completeness
+        Normalize is required for f1, EM, and completeness.
         Args:
             predictions (List[Dict]): List of predicted answers as dictionaries.
             metric (str): The metric to evaluate (e.g., 'cosine_similarity', 'rouge', 'f1').
             normalize (bool): Whether to normalize the text before evaluation.
+            output_file (str): File to save the results, ground truth, and predictions.
 
         Returns:
             float or dict: The computed metric score(s).
         """
-        if metric in ["cosine_similarity", "rouge", "bleu"]:
+        if metric in ["rouge", "bleu"]:
             # Use joined strings for these metrics
             ground_truths = ["\n".join(gt["final_answers"]) for gt in self.test_data.to_dict(orient="records")]
             predictions = ["\n".join(pred["answers"]) for pred in predictions]
 
-        elif metric in ["f1", "exact_match", "temporal_consistency", "completeness"]:
+        elif metric in ["f1", "exact_match", "temporal_alignment", "temporal_ordering", "completeness"]:
             # Use lists for these metrics
             ground_truths = [gt["final_answers"] for gt in self.test_data.to_dict(orient="records")]
             predictions = [pred["answers"] for pred in predictions]
@@ -70,45 +80,35 @@ class TLQAEvaluation:
         else:
             raise ValueError(f"Unsupported metric: {metric}")
 
-        return self.metrics[metric](predictions, ground_truths)
+        # Compute the metric
+        results = self.metrics[metric](predictions, ground_truths)
 
-    def cosine_similarity(self, predictions: List[str], ground_truths: List[str]) -> float:
-        """
-        Computes the average cosine similarity between predicted and ground truth sentences.
-        """
-        pred_embeddings = self.model.encode(predictions, convert_to_tensor=True)
-        gt_embeddings = self.model.encode(ground_truths, convert_to_tensor=True)
-        similarities = util.cos_sim(pred_embeddings, gt_embeddings)
-        return similarities.diagonal().mean().item()
+        return results
 
     @staticmethod
-    def rouge_l_similarity(predictions: List[str], ground_truths: List[str]) -> float:
+    def rouge_scores(predictions: List[str], ground_truths: List[str]) -> dict[str, ndarray]:
         """
-        Computes the average ROUGE-L similarity between predicted and ground truth sentences.
+        Computes the average ROUGE-1, ROUGE-2, and ROUGE-L scores between predicted and ground truth sentences.
         """
-        scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
-        scores = [scorer.score(gt, pred)['rougeL'].fmeasure for pred, gt in zip(predictions, ground_truths)]
-        return np.mean(scores)
+        scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+        rouge_1, rouge_2, rouge_l = [], [], []
+
+        for pred, gt in zip(predictions, ground_truths):
+            scores = scorer.score(gt, pred)
+            rouge_1.append(scores['rouge1'].fmeasure)
+            rouge_2.append(scores['rouge2'].fmeasure)
+            rouge_l.append(scores['rougeL'].fmeasure)
+
+        return {
+            "ROUGE-1": np.mean(rouge_1),
+            "ROUGE-2": np.mean(rouge_2),
+            "ROUGE-L": np.mean(rouge_l)
+        }
 
     @staticmethod
-    def bleu_score(predictions: List[str], ground_truths: List[str]) -> float:
-        """
-        Computes the average BLEU score between predicted and ground truth sentences.
-        """
-        bleu_scores = [sentence_bleu([gt.split()], pred.split()) for pred, gt in zip(predictions, ground_truths)]
-        return np.mean(bleu_scores)
-
-    @staticmethod
-    def f1_score(predictions: List[List[str]], ground_truths: List[List[str]]) -> Dict[str, float]:
+    def f1_score(predictions: List[List[str]], ground_truths: List[List[str]]) -> dict[str, ndarray]:
         """
         Computes Precision, Recall, and F1 score between predicted and ground truth lists of answers.
-
-        Args:
-            predictions (List[List[str]]): List of predicted answers.
-            ground_truths (List[List[str]]): List of ground truth answers.
-
-        Returns:
-            Dict[str, float]: Average Precision, Recall, and F1 scores.
         """
         precisions, recalls, f1_scores = [], [], []
 
@@ -132,7 +132,7 @@ class TLQAEvaluation:
         }
 
     @staticmethod
-    def exact_match(predictions: List[List[str]], ground_truths: List[List[str]]) -> float:
+    def exact_match(predictions: List[List[str]], ground_truths: List[List[str]]) -> ndarray:
         """
         Computes the Exact Match score for lists of predictions and ground truths.
         """
@@ -142,37 +142,57 @@ class TLQAEvaluation:
         ]
         return np.mean(matches)
 
-    @staticmethod
-    def completeness(predictions: List[List[str]], ground_truths: List[List[str]]) -> float:
+    def completeness(self, predictions: List[List[str]], ground_truths: List[List[str]],
+                     threshold: float = 0.7) -> ndarray:
         """
-        Computes Completeness score for lists of predictions and ground truths.
+        Computes Completeness score for lists of predictions and ground truths using cosine similarity.
 
         Args:
             predictions (List[List[str]]): List of predicted answers.
             ground_truths (List[List[str]]): List of ground truth answers.
+            threshold (float): Similarity threshold to consider a match (default=0.7).
 
         Returns:
-            float: Completeness score across all examples.
+            float: Mean completeness score across all examples.
         """
         completeness_scores = []
 
         for pred_list, gt_list in zip(predictions, ground_truths):
-            gt_set = set(gt_list)
-            intersection = len(gt_set & set(pred_list))
+            # Compute embeddings for ground truths and predictions
+            gt_embeddings = self.model.encode(gt_list, convert_to_tensor=True)
+            pred_embeddings = self.model.encode(pred_list, convert_to_tensor=True)
+
+            # Compute cosine similarity between predictions and ground truths
+            similarities = util.cos_sim(pred_embeddings, gt_embeddings).cpu().numpy()
+
+            # For each ground truth, check if any prediction passes the similarity threshold
+            matched_count = sum(
+                any(sim >= threshold for sim in similarities[:, i])
+                for i in range(len(gt_list))
+            )
 
             # Completeness = Fraction of ground truth items covered by predictions
-            completeness = intersection / len(gt_set) if gt_set else 0
+            completeness = matched_count / len(gt_list) if gt_list else 0
             completeness_scores.append(completeness)
 
         return np.mean(completeness_scores)
 
     @staticmethod
-    def temporal_consistency(predictions: List[List[str]], ground_truths: List[List[str]]) -> float:
+    def temporal_alignment(predictions: List[List[str]], ground_truths: List[List[str]]) -> ndarray:
         """
-        Computes Temporal Consistency for lists of predictions and ground truths.
+        Computes the normalized alignment between predicted years and ground truth years.
+        Normalizes by both the size of predicted and ground truth years to balance precision and recall.
+
+        Args:
+            predictions (List[List[str]]): List of predicted answers as strings (e.g., ["1990-1995", "2000"]).
+            ground_truths (List[List[str]]): List of ground truth answers as strings.
+
+        Returns:
+            float: Mean normalized alignment score across all examples.
         """
 
         def extract_years(text: str) -> set:
+            """Extracts individual years and year ranges from text."""
             years = []
             ranges = re.findall(r"(\d{4})-(\d{4})", text)
             for start, end in ranges:
@@ -181,18 +201,42 @@ class TLQAEvaluation:
             years.extend(int(year) for year in individual_years)
             return set(years)
 
-        def overlap_ratio(pred_years: set, gt_years: set) -> float:
-            return len(pred_years & gt_years) / len(gt_years) if gt_years else 0
+        def compute_alignment(pred_years: set, gt_years: set) -> float:
+            if not pred_years and not gt_years:
+                return 1.0  # Perfect alignment for empty prediction and ground truth.
+            if not pred_years or not gt_years:
+                return 0.0  # Mismatch if one is empty.
+            overlap = len(pred_years & gt_years)
+            return 2 * overlap / (len(pred_years) + len(gt_years))
 
-        scores = []
+        alignments = []
         for pred_list, gt_list in zip(predictions, ground_truths):
-            total_overlap = 0
-            for gt in gt_list:
-                gt_years = extract_years(gt)
-                best_overlap = max(
-                    (overlap_ratio(extract_years(pred), gt_years) for pred in pred_list), default=0
-                )
-                total_overlap += best_overlap
-            scores.append(total_overlap / len(gt_list) if gt_list else 0)
+            pred_years = {year for pred in pred_list for year in extract_years(pred)}
+            gt_years = {year for gt in gt_list for year in extract_years(gt)}
+            alignment = compute_alignment(pred_years, gt_years)
+            alignments.append(alignment)
 
-        return np.mean(scores) if scores else 0.0
+        return np.mean(alignments)
+
+    @staticmethod
+    def temporal_ordering(predictions: List[List[str]], ground_truths: List[List[str]]) -> ndarray:
+        """
+        Computes the correctness of chronological ordering in predictions.
+        """
+
+        def extract_years_ordered(text: str) -> List[int]:
+            years = []
+            ranges = re.findall(r"(\d{4})-(\d{4})", text)
+            for start, end in ranges:
+                years.extend(range(int(start), int(end) + 1))
+            individual_years = re.findall(r"(?<!-)\b\d{4}\b(?!-)", text)
+            years.extend(int(year) for year in individual_years)
+            return sorted(years)
+
+        order_scores = []
+        for pred_list, gt_list in zip(predictions, ground_truths):
+            pred_years = [year for pred in pred_list for year in extract_years_ordered(pred)]
+            order_score = int(pred_years == sorted(pred_years))  # 1 if ordered, 0 otherwise
+            order_scores.append(order_score)
+        return np.mean(order_scores)
+
