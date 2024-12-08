@@ -24,6 +24,7 @@ class TLQAEvaluation:
         # Possible metrics
         self.metrics = {
             "rouge": self.rouge_scores,
+            "bleu": self.bleu_score,
             "f1": self.f1_score,
             "exact_match": self.exact_match,
             "completeness": self.completeness,
@@ -84,6 +85,14 @@ class TLQAEvaluation:
         results = self.metrics[metric](predictions, ground_truths)
 
         return results
+
+    @staticmethod
+    def bleu_score(predictions: List[str], ground_truths: List[str]) -> ndarray:
+        """
+        Computes the average BLEU score between predicted and ground truth sentences.
+        """
+        bleu_scores = [sentence_bleu([gt.split()], pred.split()) for pred, gt in zip(predictions, ground_truths)]
+        return np.mean(bleu_scores)
 
     @staticmethod
     def rouge_scores(predictions: List[str], ground_truths: List[str]) -> dict[str, ndarray]:
