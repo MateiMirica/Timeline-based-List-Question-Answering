@@ -5,7 +5,7 @@ import re
 import numpy as np
 from numpy import ndarray
 from rouge_score import rouge_scorer
-from nltk.translate.bleu_score import sentence_bleu
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from sentence_transformers import SentenceTransformer, util
 
 
@@ -42,6 +42,20 @@ class TLQAEvaluation:
         return pd.DataFrame(data)
 
     @staticmethod
+    def read_csv_output(file_path: str) -> pd.DataFrame:
+        """
+        Load the test data from a CSV file into a DataFrame.
+        """
+        try:
+            # Use pandas to read the CSV file into a DataFrame
+            data = pd.read_csv(file_path)
+            return data
+        except Exception as e:
+            print(f"Error reading CSV file: {file_path}")
+            print(f"Details: {e}")
+            return pd.DataFrame()  # Return an empty DataFrame on failure
+
+    @staticmethod
     def normalize_text(text: str) -> str:
         """
         Normalizes the input text by removing punctuation, special characters, extra whitespace,
@@ -59,7 +73,6 @@ class TLQAEvaluation:
             predictions (List[Dict]): List of predicted answers as dictionaries.
             metric (str): The metric to evaluate (e.g., 'cosine_similarity', 'rouge', 'f1').
             normalize (bool): Whether to normalize the text before evaluation.
-            output_file (str): File to save the results, ground truth, and predictions.
 
         Returns:
             float or dict: The computed metric score(s).
@@ -67,12 +80,20 @@ class TLQAEvaluation:
         if metric in ["rouge", "bleu"]:
             # Use joined strings for these metrics
             ground_truths = ["\n".join(gt["final_answers"]) for gt in self.test_data.to_dict(orient="records")]
-            predictions = ["\n".join(pred["answers"]) for pred in predictions]
+            predictions = [(str(pred["response"])) for pred in predictions]
 
         elif metric in ["f1", "exact_match", "temporal_alignment", "temporal_ordering", "completeness"]:
             # Use lists for these metrics
             ground_truths = [gt["final_answers"] for gt in self.test_data.to_dict(orient="records")]
-            predictions = [pred["answers"] for pred in predictions]
+            # predictions = [pred["response"] for pred in predictions]
+            predictions = [
+                [pred["response"]] if isinstance(pred["response"], str) else
+                pred["response"] if isinstance(pred["response"], list) else
+                []
+                for pred in predictions
+            ]
+
+
 
             # Normalize if required
             if normalize:
@@ -91,7 +112,11 @@ class TLQAEvaluation:
         """
         Computes the average BLEU score between predicted and ground truth sentences.
         """
-        bleu_scores = [sentence_bleu([gt.split()], pred.split()) for pred, gt in zip(predictions, ground_truths)]
+
+
+        # Use a smoothing function
+        smoothing_function = SmoothingFunction().method1
+        bleu_scores = [sentence_bleu([gt.split()], pred.split(), smoothing_function=smoothing_function) for pred, gt in zip(predictions, ground_truths)]
         return np.mean(bleu_scores)
 
     @staticmethod
@@ -141,7 +166,7 @@ class TLQAEvaluation:
         }
 
     @staticmethod
-    def exact_match(predictions: List[List[str]], ground_truths: List[List[str]]) -> ndarray:
+    def exact_match(predictions: List[List[str]], ground_truths: List[List[str]]) -> float:
         """
         Computes the Exact Match score for lists of predictions and ground truths.
         """
