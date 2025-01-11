@@ -99,7 +99,7 @@ class WelfordMeanAndStdDev:
 
 
 def compute_similarity_stats_with_sampling(mapping, questions_embedding,
-                                           compute_embeddings_func, sample_size=0.05,
+                                           compute_embeddings_func, sample_size=0.01,
                                            random_seed=42):
     """
     Compute mean and standard deviation of cosine similarities using sampling.
